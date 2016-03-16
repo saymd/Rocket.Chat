@@ -6,6 +6,8 @@ RocketChat.OTR.Room = class {
 		this.established = new ReactiveVar(false);
 		this.establishing = new ReactiveVar(false);
 
+		this.userOnlineComputation = null;
+
 		this.keyPair = null;
 		this.exportedPublicKey = null;
 		this.sessionKey = null;
@@ -18,12 +20,12 @@ RocketChat.OTR.Room = class {
 		this.establishing.set(true);
 		this.firstPeer = true;
 		this.generateKeyPair().then(() => {
-			RocketChat.Notifications.notifyUser(this.peerId, 'otr', 'handshake', { roomId: this.roomId, userId: this.userId, publicKey: this.bytesToHexString(this.exportedPublicKey), refresh: refresh });
+			RocketChat.Notifications.notifyUser(this.peerId, 'otr', 'handshake', { roomId: this.roomId, userId: this.userId, publicKey: EJSON.stringify(new Uint8Array(this.exportedPublicKey)), refresh: refresh });
 		});
 	}
 
 	acknowledge() {
-		RocketChat.Notifications.notifyUser(this.peerId, 'otr', 'acknowledge', { roomId: this.roomId, userId: this.userId, publicKey: this.bytesToHexString(this.exportedPublicKey) });
+		RocketChat.Notifications.notifyUser(this.peerId, 'otr', 'acknowledge', { roomId: this.roomId, userId: this.userId, publicKey: EJSON.stringify(new Uint8Array(this.exportedPublicKey)) });
 	}
 
 	deny() {
@@ -44,36 +46,30 @@ RocketChat.OTR.Room = class {
 		this.sessionKey = null;
 		this.serial = null;
 		this.peerSerial = null;
-	}
-
-	bytesToHexString(bytes) {
-		if (!bytes)
-			return null;
-		bytes = new Uint8Array(bytes);
-		var hexBytes = [];
-		for (var i = 0; i < bytes.length; ++i) {
-			var byteString = bytes[i].toString(16);
-			if (byteString.length < 2)
-				byteString = "0" + byteString;
-			hexBytes.push(byteString);
-		}
-		return hexBytes.join("");
-	}
-
-	hexStringToUint8Array(hexString) {
-		if (hexString.length % 2 != 0)
-			throw "Invalid hexString";
-		var arrayBuffer = new Uint8Array(hexString.length / 2);
-		for (var i = 0; i < hexString.length; i += 2) {
-			var byteValue = parseInt(hexString.substr(i, 2), 16);
-			if (byteValue == NaN)
-				throw "Invalid hexString";
-			arrayBuffer[i/2] = byteValue;
-		}
-		return arrayBuffer;
+		Meteor.call('deleteOldOTRMessages', this.roomId);
 	}
 
 	generateKeyPair() {
+		if (this.userOnlineComputation) {
+			this.userOnlineComputation.stop();
+		}
+
+		this.userOnlineComputation = Tracker.autorun(() => {
+			var $room = $('#chat-window-' + this.roomId);
+			var $title = $('.fixed-title h2', $room);
+			if (this.established.get()) {
+				if ($room.length && $title.length && !$('.otr-icon', $title).length) {
+					$title.prepend('<i class=\'otr-icon icon-key-1\'></i>');
+					$('.input-message-container').addClass('otr');
+				}
+			} else {
+				if ($title.length) {
+					$('.otr-icon', $title).remove();
+					$('.input-message-container').removeClass('otr');
+				}
+			}
+		});
+
 		// Generate an ephemeral key pair.
 		return window.crypto.subtle.generateKey({
 			name: 'ECDH',
@@ -84,14 +80,17 @@ RocketChat.OTR.Room = class {
 		})
 		.then((exportedPublicKey) => {
 			this.exportedPublicKey = exportedPublicKey;
+
+			// Once we have generated new keys, it's safe to delete old messages
+			Meteor.call('deleteOldOTRMessages', this.roomId);
 		})
-		.catch((err) => {
-			console.error(err);
+		.catch((e) => {
+			toastr.error(e);
 		});
 	}
 
 	importPublicKey(publicKey) {
-		return window.crypto.subtle.importKey('spki', this.hexStringToUint8Array(publicKey), {
+		return window.crypto.subtle.importKey('spki', EJSON.parse(publicKey), {
 			name: 'ECDH',
 			namedCurve: 'P-256'
 		}, false, []).then((peerPublicKey) => {
@@ -116,9 +115,10 @@ RocketChat.OTR.Room = class {
 		});
 	}
 
-	encrypt(message) {
-		this.serial++;
-		var data = new TextEncoder("UTF-8").encode(EJSON.stringify({serial: this.serial, msg: message, userId: this.userId, padding: Random.id(Random.fraction()*20) }))
+	encryptText(data) {
+		if (!_.isObject(data)) {
+			data = new TextEncoder('UTF-8').encode(EJSON.stringify({ text: data, ack: Random.id((Random.fraction()+1)*20) }));
+		}
 		var iv = crypto.getRandomValues(new Uint8Array(12));
 
 		return crypto.subtle.encrypt({
@@ -129,14 +129,21 @@ RocketChat.OTR.Room = class {
 			var output = new Uint8Array(iv.length + cipherText.length);
 			output.set(iv, 0);
 			output.set(cipherText, iv.length);
-			return this.bytesToHexString(output);
-		}).catch((e) => {
-			return "";
+			return EJSON.stringify(output);
+		}).catch(() => {
+			throw new Meteor.Error('encryption-error', 'Encryption error.');
 		});
 	}
 
+	encrypt(message) {
+		this.serial++;
+		var data = new TextEncoder('UTF-8').encode(EJSON.stringify({ serial: this.serial, text: message, userId: this.userId, ack: Random.id((Random.fraction()+1)*20) }));
+		var enc = this.encryptText(data);
+		return enc;
+	}
+
 	decrypt(message) {
-		var cipherText = new this.hexStringToUint8Array(message);
+		var cipherText = EJSON.parse(message);
 		var iv = cipherText.slice(0, 12);
 		cipherText = cipherText.slice(12);
 
@@ -144,26 +151,11 @@ RocketChat.OTR.Room = class {
 			name: 'AES-GCM',
 			iv: iv
 		}, this.sessionKey, cipherText).then((data) => {
-			data = EJSON.parse(new TextDecoder("UTF-8").decode(new Uint8Array(data)));
-
-			// This prevents any replay attacks. Or attacks where messages are changed in order.
-			// If message is from the same userId as me, serials must be equal
-			if (data.userId === this.userId && data.serial !== this.serial) {
-				throw new Error("Invalid serial.");
-			} else if (data.userId !== this.userId) {
-				// If serial difference is larger than one, message is out of order
-				var checkSerial = data.serial - this.peerSerial;
-				if (checkSerial !== 1) {
-					throw new Error("Invalid serial.");
-				}
-
-				// update serial number to the last received serial
-				this.peerSerial = data.serial;
-			}
-
-			return data.msg;
+			data = EJSON.parse(new TextDecoder('UTF-8').decode(new Uint8Array(data)));
+			return data;
 		})
 		.catch((e) => {
+			toastr.error(e);
 			return message;
 		});
 	}
@@ -174,7 +166,7 @@ RocketChat.OTR.Room = class {
 			case 'handshake':
 				let timeout = null;
 
-				establishConnection = () => {
+				let establishConnection = () => {
 					this.establishing.set(true);
 					Meteor.clearTimeout(timeout);
 					this.generateKeyPair().then(() => {
@@ -187,7 +179,7 @@ RocketChat.OTR.Room = class {
 							});
 						});
 					});
-				}
+				};
 
 				if (data.refresh && this.established.get()) {
 					this.reset();
@@ -198,12 +190,12 @@ RocketChat.OTR.Room = class {
 					}
 
 					swal({
-						title: "<i class='icon-key alert-icon'></i>" + TAPi18n.__("OTR"),
-						text: TAPi18n.__("Username_wants_to_start_otr_Do_you_want_to_accept", { username: user.username }),
+						title: '<i class=\'icon-key-1 alert-icon\'></i>' + TAPi18n.__('OTR'),
+						text: TAPi18n.__('Username_wants_to_start_otr_Do_you_want_to_accept', { username: user.username }),
 						html: true,
 						showCancelButton: true,
-						confirmButtonText: TAPi18n.__("Yes"),
-						cancelButtonText: TAPi18n.__("No")
+						confirmButtonText: TAPi18n.__('Yes'),
+						cancelButtonText: TAPi18n.__('No')
 					}, (isConfirm) => {
 						if (isConfirm) {
 							establishConnection();
@@ -230,16 +222,26 @@ RocketChat.OTR.Room = class {
 			case 'deny':
 				if (this.establishing.get()) {
 					this.reset();
-					swal(TAPi18n.__("Denied"), null, "error");
+					const user = Meteor.users.findOne(this.peerId);
+					swal({
+						title: '<i class=\'icon-key-1 alert-icon\'></i>' + TAPi18n.__('OTR'),
+						text: TAPi18n.__('Username_denied_the_OTR_session', { username: user.username }),
+						html: true
+					});
 				}
 				break;
 
 			case 'end':
 				if (this.established.get()) {
 					this.reset();
-					swal(TAPi18n.__("Ended"), null, "error");
+					const user = Meteor.users.findOne(this.peerId);
+					swal({
+						title: '<i class=\'icon-key-1 alert-icon\'></i>' + TAPi18n.__('OTR'),
+						text: TAPi18n.__('Username_ended_the_OTR_session', { username: user.username }),
+						html: true
+					});
 				}
 				break;
 		}
 	}
-}
+};

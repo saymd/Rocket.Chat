@@ -108,6 +108,7 @@
   "Avatar_changed_successfully" : "アバターを変更しました",
   "Avatar_URL" : "アバター URL",
   "Avatar_url_invalid_or_error" : "入力された URL は間違っているかアクセスできません。もう一度違う URL でお試しください。",
+  "Avatar" : "アバターを変更",
   "away" : "離席中",
   "Away" : "離席中",
   "away_female" : "離席中",
@@ -127,7 +128,6 @@
   "Cancel" : "キャンセル",
   "CDN_PREFIX" : "CDN プレフィックス",
   "Certificates_and_Keys" : "証明書と認証キー",
-  "Change_avatar" : "アバターを変更",
   "Channels" : "チャンネル",
   "Channels_list" : "パブリックチャンネル一覧",
   "Chat_Rooms" : "チャットルーム",
@@ -433,7 +433,6 @@
   "Offline_Mention_Email" : "[__site__] あなたについて #__room__ でコメントされています by __user__",
   "Old_and_new_password_must_be_different" : "新しいパスワードは、古いパスワードと同じにできません。",
   "Old_and_new_password_required" : "パスワードを変更するには、古いパスワードと新しいパスワードの両方を入力してください。",
-  "Old_Password" : "古いパスワード",
   "Online" : "オンライン",
   "Only_you_can_see_this_message" : "このメッセージは、あなただけが見られます",
   "Oops!" : "おっと",
@@ -728,4 +727,6 @@
   "Your_Open_Source_solution" : "独自のオープンソースチャットソリューション",
   "Your_password_is_wrong" : "パスワードが間違っています!",
   "Your_push_was_sent_to_s_devices" : "プッシュ通知が %s 台のデバイスへ送信されました"
+  "You_need_confirm_email" : "ログインするためにはメールを確認する必要があります！",
+  "Your_Open_Source_solution" : "独自のオープンソースチャットソリューション"
 }
